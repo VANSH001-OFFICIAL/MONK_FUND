@@ -41,7 +41,7 @@ def esc(text): return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(text))
 
 # --- COMMANDS & BUTTONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and update.effective_user.id not in ADMIN_IDS: return
+    if update.effective_user.id not in ADMIN_IDS: return
     
     keyboard = [
         [InlineKeyboardButton("💰 Check Balance", callback_data='check_balance')],
@@ -70,18 +70,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TOTAL_FUND
     
-    # 1. CHANNEL Payout Detection
+    # 1. CHANNEL Payout Detection (Alerts to Admins only)
     if update.channel_post and "⚠️ New UPI Payout Request!" in update.channel_post.text:
         match = re.search(r"Request Amount\s*:\s*₹([\d.]+)", update.channel_post.text)
         if match:
             amount = float(match.group(1))
             TOTAL_FUND -= amount
             save_fund(TOTAL_FUND)
-            await context.bot.send_message(
-                chat_id=update.channel_post.chat_id,
-                text=f"⚠️ *Payout Detected*\n📉 *Debit:* `₹{esc(amount)}`\n💰 *Remaining:* `₹{esc(TOTAL_FUND)}`",
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
+            
+            # Send alert to all admins via DM
+            alert_msg = (f"⚠️ *Payout Detected*\n"
+                         f"━━━━━━━━━━━━━━━━━━\n"
+                         f"📉 *Debit:* `₹{esc(amount)}`\n"
+                         f"💰 *Remaining:* `₹{esc(TOTAL_FUND)}`\n"
+                         f"━━━━━━━━━━━━━━━━━━")
+            
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(chat_id=admin_id, text=alert_msg, parse_mode=ParseMode.MARKDOWN_V2)
+                except: continue
         return
 
     # 2. USER Manual Input (Add/Remove)
@@ -102,9 +109,9 @@ def main():
     
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(CallbackQueryHandler(button_handler))
-    # Dono channel_post aur message dono ko handle karega
     app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_everything))
     
+    print("Bot is running...")
     app_bot.run_polling()
 
 if __name__ == '__main__':
