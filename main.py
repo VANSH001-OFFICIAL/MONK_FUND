@@ -6,7 +6,10 @@ from flask import Flask
 from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
+    filters, ContextTypes
+)
 
 # --- FLASK SERVER (Keep-Alive) ---
 app = Flask('')
@@ -18,6 +21,8 @@ def run_web(): app.run(host='0.0.0.0', port=8080)
 TOKEN = "8767780772:AAEEL8erNKK8jc5lakgQuQS4FVaMYdK-tss"
 ADMIN_IDS = [6450199112, 7117775366, 1872848003]
 DB_FILE = "fund_data.json"
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- DATABASE ---
 def load_fund():
@@ -34,9 +39,9 @@ TOTAL_FUND = load_fund()
 
 def esc(text): return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(text))
 
-# --- BUTTONS & MENU ---
+# --- COMMANDS & BUTTONS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS: return
+    if update.effective_user and update.effective_user.id not in ADMIN_IDS: return
     
     keyboard = [
         [InlineKeyboardButton("💰 Check Balance", callback_data='check_balance')],
@@ -54,43 +59,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"💰 *Current Balance:* `₹{esc(TOTAL_FUND)}`", parse_mode=ParseMode.MARKDOWN_V2)
     
     elif query.data == 'add_fund_prompt':
-        await query.edit_message_text("✍️ *Reply to this message with the amount to add*\nExample: `100`", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("✍️ *Reply to this message with amount to add*", parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data['action'] = 'adding'
     
     elif query.data == 'remove_fund_prompt':
-        await query.edit_message_text("✍️ *Reply to this message with the amount to remove*\nExample: `50`", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("✍️ *Reply to this message with amount to remove*", parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data['action'] = 'removing'
 
-# --- LOGIC TO HANDLE INPUTS ---
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- HANDLER ---
+async def handle_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TOTAL_FUND
-    if update.effective_user.id not in ADMIN_IDS: return
     
-    msg_text = update.effective_message.text
-    
-    # Payout Detection (Priority)
-    if msg_text.startswith("⚠️ New UPI Payout Request!"):
-        match = re.search(r"Request Amount\s*:\s*₹([\d.]+)", msg_text)
+    # 1. CHANNEL Payout Detection
+    if update.channel_post and "⚠️ New UPI Payout Request!" in update.channel_post.text:
+        match = re.search(r"Request Amount\s*:\s*₹([\d.]+)", update.channel_post.text)
         if match:
             amount = float(match.group(1))
             TOTAL_FUND -= amount
             save_fund(TOTAL_FUND)
-            await update.message.reply_text(f"⚠️ *Payout Detected*\n📉 *Debit:* `₹{esc(amount)}`\n💰 *New Balance:* `₹{esc(TOTAL_FUND)}`", parse_mode=ParseMode.MARKDOWN_V2)
-    
-    # Manual Add/Remove Logic
-    elif 'action' in context.user_data:
+            await context.bot.send_message(
+                chat_id=update.channel_post.chat_id,
+                text=f"⚠️ *Payout Detected*\n📉 *Debit:* `₹{esc(amount)}`\n💰 *Remaining:* `₹{esc(TOTAL_FUND)}`",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        return
+
+    # 2. USER Manual Input (Add/Remove)
+    if update.message and update.effective_user.id in ADMIN_IDS and 'action' in context.user_data:
         try:
-            amount = float(msg_text)
-            if context.user_data['action'] == 'adding':
-                TOTAL_FUND += amount
-            else:
-                TOTAL_FUND -= amount
+            amount = float(update.message.text)
+            if context.user_data['action'] == 'adding': TOTAL_FUND += amount
+            else: TOTAL_FUND -= amount
             save_fund(TOTAL_FUND)
             await update.message.reply_text(f"✅ *Success*\n💰 *New Balance:* `₹{esc(TOTAL_FUND)}`", parse_mode=ParseMode.MARKDOWN_V2)
+            context.user_data.clear()
         except ValueError:
             await update.message.reply_text("❌ *Invalid Number*")
-        finally:
-            context.user_data.clear()
 
 def main():
     Thread(target=run_web).start()
@@ -98,7 +102,8 @@ def main():
     
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(CallbackQueryHandler(button_handler))
-    app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    # Dono channel_post aur message dono ko handle karega
+    app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_everything))
     
     app_bot.run_polling()
 
